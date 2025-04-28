@@ -4,11 +4,6 @@ import os
 import matplotlib.pyplot as plt
 from pathlib import Path
 import re
-from collections import deque # Behøves egentlig ikke her, men bevares da den var i originalen
-
-# Vigtigt: Sikr at 'old.crown_detector' er korrekt sti til den fil, der indeholder funktionen
-# Da dette script *er* old/crown_detector.py, kan importen fjernes,
-# og funktionen bruges direkte. Jeg fjerner importen og bevarer funktionen her.
 
 def load_template(template_path):
     template = cv2.imread(template_path)
@@ -162,7 +157,7 @@ def evaluate_crown_detection(terrain_dir, templates, template_names, threshold=0
     return stats, results
 
 def main():
-    template_dir = "KingDominoDataset/Crown_Templates"
+    template_dir = "Crown_Templates"
     template_paths = [
         os.path.join(template_dir, "Crown_up.png"),
         os.path.join(template_dir, "Crown_down.png"),
@@ -185,72 +180,51 @@ def main():
         print("Kunne ikke indlæse alle templates. Kontroller filstierne.")
         return
     
-    terrain_categories_dir = "KingDominoDataset/TerrainCategories"
-    terrain_types = ["Field", "Forest", "Grassland", "Lake", "Mine", "Swamp"]
-    
-    threshold = 0.6
-    max_files = 50
-    
-    all_results = {}
-    for terrain in terrain_types:
-        terrain_dir = os.path.join(terrain_categories_dir, terrain)
+    # Brug en eksisterende board som testeksempel
+    board_image_path = "King Domino dataset/King Domino dataset/Cropped and perspective corrected boards/1.jpg"
+    if not os.path.exists(board_image_path):
+        print(f"Kunne ikke finde testbilledet: {board_image_path}")
+        return
         
-        if not os.path.exists(terrain_dir):
-            print(f"Advarsel: Mappen {terrain_dir} findes ikke.")
-            continue
-        
-        print(f"\nEvaluerer kronedetektering for {terrain}...")
-        stats, results = evaluate_crown_detection(
-            terrain_dir, templates, template_names, 
-            threshold, max_files, visualize=True
-        )
-        
-        print(f"Resultater for {terrain}:")
-        print(f"  Nøjagtighed: {stats['accuracy']:.2f}")
-        print(f"  Precision: {stats['precision']:.2f}")
-        print(f"  Recall: {stats['recall']:.2f}")
-        print(f"  F1-score: {stats['f1_score']:.2f}")
-        
-        all_results[terrain] = {
-            'stats': stats,
-            'results': results
-        }
+    # Importer funktioner fra tiles.py for at opdele billedet
+    from tiles import load_board_image, divide_board_into_tiles
     
-    total_correct = sum(r['stats']['correct'] for r in all_results.values())
-    total_files = sum(r['stats']['total'] for r in all_results.values())
-    overall_accuracy = total_correct / total_files if total_files > 0 else 0
+    print(f"Indlæser testbillede fra {board_image_path}...")
+    board_image = load_board_image(board_image_path)
     
-    print("\nSamlet statistik på tværs af alle terræntyper:")
-    print(f"  Total antal tiles evalueret: {total_files}")
-    print(f"  Korrekte detektioner: {total_correct}")
-    print(f"  Samlet nøjagtighed: {overall_accuracy:.2f}")
+    print("Opdeler billedet i tiles...")
+    tiles = divide_board_into_tiles(board_image)
     
-    if False:
-        print("\nEksperimenterer med forskellige threshold-værdier...")
-        thresholds = [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8]
-        accuracies = []
-        
-        for thresh in thresholds:
-            print(f"\nTester threshold = {thresh}")
-            
-            terrain = "Forest"
-            terrain_dir = os.path.join(terrain_categories_dir, terrain)
-            
-            stats, _ = evaluate_crown_detection(
-                terrain_dir, templates, template_names, 
-                thresh, max_files=20, visualize=False
+    print("Detekterer kroner i hver tile...")
+    results = []
+    
+    for row_idx, row in enumerate(tiles):
+        for col_idx, tile in enumerate(row):
+            print(f"Analyserer tile ({row_idx}, {col_idx})...")
+            crown_count, centroids = detect_crowns_in_tile(
+                cv2.cvtColor(tile, cv2.COLOR_RGB2BGR), 
+                templates, 
+                template_names, 
+                threshold=0.6, 
+                visualize=True
             )
-            
-            accuracies.append(stats['accuracy'])
-            print(f"  Nøjagtighed ved threshold {thresh}: {stats['accuracy']:.2f}")
-        
-        plt.figure(figsize=(10, 5))
-        plt.plot(thresholds, accuracies, 'o-')
-        plt.xlabel('Threshold værdi')
-        plt.ylabel('Nøjagtighed')
-        plt.title('Nøjagtighed vs. Threshold værdi')
-        plt.grid(True)
-        plt.show()
+            results.append({
+                'position': (row_idx, col_idx),
+                'crown_count': crown_count,
+                'centroids': centroids
+            })
+            print(f"  Fandt {crown_count} kroner")
+    
+    print("\nResultat af kronedetektering:")
+    crown_grid = np.zeros((5, 5), dtype=int)
+    for result in results:
+        row, col = result['position']
+        crown_grid[row, col] = result['crown_count']
+    
+    for row in range(5):
+        print("  ".join([f"{crown_grid[row, col]}" for col in range(5)]))
+    
+    print("\nTest af crowndetection gennemført!")
 
 if __name__ == "__main__":
     main()
