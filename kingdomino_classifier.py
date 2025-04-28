@@ -13,7 +13,7 @@ from model import TerrainClassifier, load_model, extract_features
 MODEL_FILE = "kingdomino_terrain_model.pkl"
 
 # Standard sti til et eksempelbillede
-DEFAULT_IMAGE_PATH = r"KingDominoDataset\KingDominoDataset\Cropped and perspective corrected boards\74.jpg"
+DEFAULT_IMAGE_PATH = r"King Domino dataset/King Domino dataset/Cropped and perspective corrected boards/74.jpg"
 
 def load_board_image(image_path):
     if not os.path.exists(image_path):

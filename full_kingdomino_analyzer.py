@@ -15,7 +15,7 @@ from model import TerrainClassifier, load_model as load_model_from_model_py, ext
 
 # Constants
 TERRAIN_MODEL_FILE = "kingdomino_terrain_model.pkl"
-CROWN_TEMPLATES_DIR = "KingDominoDataset/Crown_Templates"
+CROWN_TEMPLATES_DIR = "Crown_Templates"
 TERRAIN_CATEGORIES_DIR = "KingDominoDataset/TerrainCategories"
 TERRAIN_TYPES = ["Field", "Forest", "Grassland", "Lake", "Mine", "Swamp"]
 CROWN_TEMPLATE_NAMES = ["Up", "Down", "Left", "Right"]

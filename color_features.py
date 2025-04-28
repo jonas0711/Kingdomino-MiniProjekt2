@@ -420,7 +420,15 @@ def run_color_analysis(tile_labels_mapping, tiles_dir, output_dir='Visualisering
     return terrain_features
 
 if __name__ == "__main__":
-    tiles_dir = "KingDominoDataset/KingDominoDataset/Extracted_Tiles"
+    # Sæt stien til den korrekte mappe med billeder (med dobbelt 'King Domino dataset')
+    tiles_dir = "King Domino dataset/King Domino dataset/Extracted_Tiles"  # Opdateret sti
+    print(f"Bruger billedmappe: {tiles_dir}")  # Debug: Vis hvilken mappe der bruges
+
+    # Tjek om mappen eksisterer, ellers stop med fejl
+    if not os.path.exists(tiles_dir):
+        print(f"FEJL: Mappen {tiles_dir} findes ikke! Tjek stien og prøv igen.")
+        exit(1)
+
     tile_labels_file = "Excel+JSON/tile_labels_mapping.json" # Rettet sti
     output_dir = "Visualiseringer"
     

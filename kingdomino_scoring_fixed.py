@@ -138,7 +138,7 @@ def calculate_harmony_bonus(board_data):
     return 0
 
 def main():
-    excel_file = 'kingdomino_labels_fixed.xlsx'
+    excel_file = 'Excel+JSON/kingdomino_labels_fixed.xlsx'
     
     if not os.path.exists(excel_file):
         print(f"Fejl: Filen {excel_file} blev ikke fundet.")
@@ -187,7 +187,7 @@ def main():
     
     scores_df = scores_df.sort_values('Total Score', ascending=False)
     
-    output_file = 'kingdomino_final_scores_fixed.xlsx'
+    output_file = 'Excel+JSON/kingdomino_final_scores_fixed.xlsx'
     print(f"\nGemmer resultater til {output_file}...")
     
     try:

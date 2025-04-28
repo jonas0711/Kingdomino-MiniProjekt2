@@ -156,7 +156,7 @@ def classify_tiles_with_crowns(tiles, model, terrain_features):
             crown_positions[(row, col)] = []
             continue
         tile_img = tiles[row][col]
-        count, centroids, _ = detect_crowns_in_tile(tile_img, terr, terrain_features)
+        count, centroids = detect_crowns_in_tile(tile_img, terr, terrain_features)[:2]
         crown_results[row, col] = count
         crown_positions[(row, col)] = centroids
     return terrain_results, crown_results, crown_positions
