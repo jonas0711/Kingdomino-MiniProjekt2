@@ -7,11 +7,19 @@ import matplotlib.cm as cm
 import cv2
 import pickle
 import re
-import random
-from sklearn.metrics import classification_report, confusion_matrix
+import json
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+from sklearn.model_selection import train_test_split
 
-# Import required components from model.py for deserialization and feature extraction
-from model import TerrainClassifier, load_model as load_model_from_model_py, extract_features, extract_hsv_histogram, extract_texture_histogram
+# Import required components from model.py
+from model import (
+    TerrainClassifier, 
+    load_model as load_model_from_model_py, 
+    extract_features, 
+    extract_hsv_histogram, 
+    extract_texture_histogram,
+    load_data
+)
 
 # Constants
 TERRAIN_MODEL_FILE = "kingdomino_terrain_model.pkl"
@@ -19,6 +27,10 @@ CROWN_TEMPLATES_DIR = "Crown_Templates"
 TERRAIN_CATEGORIES_DIR = "KingDominoDataset/TerrainCategories"
 TERRAIN_TYPES = ["Field", "Forest", "Grassland", "Lake", "Mine", "Swamp"]
 CROWN_TEMPLATE_NAMES = ["Up", "Down", "Left", "Right"]
+RESULTS_DIR = "Model_Evaluation_Results"
+
+# Ensure output directory exists
+os.makedirs(RESULTS_DIR, exist_ok=True)
 
 def load_terrain_model(model_path=TERRAIN_MODEL_FILE):
     try:
@@ -158,7 +170,6 @@ def classify_tile(tile_image, terrain_model, templates, template_names, crown_th
             elif tile_image.ndim == 2:
                  rgb_image = cv2.cvtColor(tile_image, cv2.COLOR_GRAY2RGB)
             else:
-                 print(f"Advarsel: Uventet billedformat for terrænklassifikation {tile_image.shape}. Bruger første 3 kanaler.")
                  rgb_image = tile_image[:,:,:3]
         else:
             try:
@@ -173,17 +184,14 @@ def classify_tile(tile_image, terrain_model, templates, template_names, crown_th
                 elif rgb_image.ndim == 2:
                      rgb_image = cv2.cvtColor(rgb_image, cv2.COLOR_GRAY2RGB)
                 else:
-                     print(f"Advarsel: Uventet billedformat for terrænklassifikation efter konvertering til numpy {rgb_image.shape}. Bruger første 3 kanaler.")
                      rgb_image = rgb_image[:,:,:3]
             except Exception as conv_e:
-                print(f"Fejl ved konvertering af billede til numpy/RGB: {conv_e}")
                 return "Unknown", 0, []
 
         features = extract_features(rgb_image)
         features_2d = features.reshape(1, -1)
         terrain_type = terrain_model.predict_terrain(features_2d)[0]
     except Exception as e:
-        print(f"Fejl under terrænklassifikation: {e}")
         terrain_type = "Unknown"
 
     crown_count = 0
@@ -193,7 +201,6 @@ def classify_tile(tile_image, terrain_model, templates, template_names, crown_th
             tile_image, templates, template_names, crown_threshold
         )
     except Exception as e:
-        print(f"Fejl under kronedetektering: {e}")
         crown_count = 0
         centroids = []
 
@@ -232,99 +239,187 @@ def classify_tile(tile_image, terrain_model, templates, template_names, crown_th
     
     return terrain_type, crown_count, centroids
 
-def evaluate_on_sample(terrain_model, templates, template_names, samples_per_terrain=10, visualize=False):
-    results = []
-    actual_terrains = []
-    predicted_terrains = []
-    actual_crowns = []
-    predicted_crowns = []
+def evaluate_on_test_data(terrain_model, templates, template_names, visualize_samples=5):
+    """Evaluerer modellen på test data (20% split fra original træning)"""
+    print("\nIndlæser original data til at recreate train/test split...")
+    images, labels, terrain_classes = load_data()
     
+    print(f"Indlæst {len(images)} billeder med {len(set(labels))} forskellige terrænklasser.")
+    
+    # Udtræk features for alle billeder
+    print("Udtrækker features...")
+    features = []
+    for i, image in enumerate(images):
+        if i % 100 == 0:
+            print(f"  Bearbejder billede {i+1}/{len(images)}...")
+        features.append(extract_features(image))
+    features = np.array(features)
+    
+    # Recreate samme train/test split som i træningen
+    print("Recreating train/test split (80/20)...")
+    _, X_test, _, y_test = train_test_split(
+        features, labels, test_size=0.2, random_state=42, stratify=labels
+    )
+    
+    print(f"Evaluerer på {len(X_test)} test-samples...")
+    
+    # Konverter y_test til terrænnavne
+    terrain_names = {v: k for k, v in terrain_classes.items()}
+    y_test_terrain = [terrain_names[label] for label in y_test]
+    
+    # Predict med model
+    y_pred_terrain = terrain_model.predict_terrain(X_test)
+    
+    # Crown detection resultater
+    y_true_crowns = []
+    y_pred_crowns = []
+    
+    # Evaluer crown detection på test data
+    print("Evaluerer kronedetektering...")
+    
+    terrain_samples = {}
+    for i, (image, true_terrain) in enumerate(zip(images, [terrain_names[label] for label in labels])):
+        if true_terrain not in terrain_samples:
+            terrain_samples[true_terrain] = []
+        terrain_samples[true_terrain].append(image)
+    
+    # Test på et mindre subset for kronedetektering (da vi ikke har ground truth for alle kronetællinger)
+    test_terrain_images = {}
+    test_crown_count = 0
+    
+    # Evaluer kun på et subsæt af billeder i TerrainCategories
     for terrain_type in TERRAIN_TYPES:
         terrain_dir = os.path.join(TERRAIN_CATEGORIES_DIR, terrain_type)
-        
         if not os.path.exists(terrain_dir):
             print(f"Advarsel: Mappen {terrain_dir} findes ikke.")
             continue
         
         files = [f for f in os.listdir(terrain_dir) if f.endswith('.png')]
-        
-        if len(files) > samples_per_terrain:
-            files = random.sample(files, samples_per_terrain)
-        
-        print(f"\nEvaluerer på {len(files)} samples fra {terrain_type}...")
+        test_terrain_images[terrain_type] = []
         
         for i, file in enumerate(files):
             file_path = os.path.join(terrain_dir, file)
             
+            if not os.path.exists(file_path):
+                continue
+                
             tile = cv2.imread(file_path)
             if tile is None:
-                print(f"Kunne ikke indlæse {file_path}")
                 continue
             
             actual_terrain, actual_crown_count = extract_info_from_filename(file)
             
             if actual_terrain is None:
                 actual_terrain = terrain_type
-
+            
+            # Forventet terrain og crown count
+            y_true_crowns.append(actual_crown_count)
+            
+            # Beregn terrain og crown med vores model
             predicted_terrain, predicted_crown_count, _ = classify_tile(
                 tile, terrain_model, templates, template_names,
-                crown_threshold=0.6, visualize=(visualize and i == 0)
+                crown_threshold=0.6, visualize=(i < visualize_samples)
             )
             
-            actual_terrains.append(actual_terrain)
-            predicted_terrains.append(predicted_terrain)
-            actual_crowns.append(actual_crown_count)
-            predicted_crowns.append(predicted_crown_count)
+            y_pred_crowns.append(predicted_crown_count)
+            test_crown_count += 1
+    
+    # Beregn metrics
+    terrain_accuracy = accuracy_score(y_test_terrain, y_pred_terrain)
+    
+    # For kroner bruger vi exact match accuracy på det subset vi evaluerer
+    crown_correct = sum(1 for true, pred in zip(y_true_crowns, y_pred_crowns) if true == pred)
+    crown_accuracy = crown_correct / len(y_true_crowns) if y_true_crowns else 0
+    
+    # Beregn også metrics pr terræntype
+    terrain_metrics = {}
+    for terrain in sorted(set(y_test_terrain)):
+        indices = [i for i, t in enumerate(y_test_terrain) if t == terrain]
+        terrain_true = [y_test_terrain[i] for i in indices]
+        terrain_pred = [y_pred_terrain[i] for i in indices]
+        terrain_accuracy = accuracy_score(terrain_true, terrain_pred)
+        
+        terrain_metrics[terrain] = {
+            'count': len(terrain_true),
+            'accuracy': terrain_accuracy
+        }
+    
+    # Beregn crown detection metrics pr terræntype (for det subsæt vi har)
+    crown_metrics_by_terrain = {}
+    for terrain_type in TERRAIN_TYPES:
+        terrain_dir = os.path.join(TERRAIN_CATEGORIES_DIR, terrain_type)
+        if not os.path.exists(terrain_dir):
+            continue
             
-            results.append({
-                'filename': file,
-                'actual_terrain': actual_terrain,
-                'actual_crowns': actual_crown_count,
-                'predicted_terrain': predicted_terrain,
-                'predicted_crowns': predicted_crown_count,
-                'terrain_correct': actual_terrain == predicted_terrain,
-                'crowns_correct': actual_crown_count == predicted_crown_count,
-                'fully_correct': (actual_terrain == predicted_terrain) and (actual_crown_count == predicted_crown_count)
-            })
-
-    total = len(results)
-    terrain_correct = sum(1 for r in results if r['terrain_correct'])
-    crowns_correct = sum(1 for r in results if r['crowns_correct'])
-    fully_correct = sum(1 for r in results if r['fully_correct'])
+        files = [f for f in os.listdir(terrain_dir) if f.endswith('.png')]
+        true_crowns = []
+        pred_crowns = []
+        
+        for file in files:
+            file_path = os.path.join(terrain_dir, file)
+            tile = cv2.imread(file_path)
+            if tile is None:
+                continue
+                
+            actual_terrain, actual_crown_count = extract_info_from_filename(file)
+            if actual_terrain is None:
+                actual_terrain = terrain_type
+                
+            _, predicted_crown_count, _ = classify_tile(
+                tile, terrain_model, templates, template_names, crown_threshold=0.6
+            )
+            
+            true_crowns.append(actual_crown_count)
+            pred_crowns.append(predicted_crown_count)
+        
+        if true_crowns:
+            crown_correct = sum(1 for true, pred in zip(true_crowns, pred_crowns) if true == pred)
+            crown_accuracy = crown_correct / len(true_crowns)
+            
+            crown_metrics_by_terrain[terrain_type] = {
+                'crown_accuracy': crown_accuracy,
+                'sample_count': len(true_crowns),
+                'true_crown_count': sum(true_crowns),
+                'pred_crown_count': sum(pred_crowns)
+            }
     
-    terrain_accuracy = terrain_correct / total if total > 0 else 0
-    crowns_accuracy = crowns_correct / total if total > 0 else 0
-    overall_accuracy = fully_correct / total if total > 0 else 0
+    # Opret detaljeret rapport
+    results = {
+        'terrain_accuracy': terrain_accuracy,
+        'crown_accuracy': crown_accuracy,
+        'test_samples': len(y_test),
+        'crown_test_samples': test_crown_count,
+        'terrain_metrics': terrain_metrics,
+        'crown_metrics_by_terrain': crown_metrics_by_terrain,
+        'classification_report': classification_report(y_test_terrain, y_pred_terrain, output_dict=True)
+    }
     
-    print("\n===== PERFORMANCE REPORT =====")
-    print(f"Total samples: {total}")
-    print(f"Terrain classification accuracy: {terrain_accuracy:.2f} ({terrain_correct}/{total})")
-    print(f"Crown detection accuracy: {crowns_accuracy:.2f} ({crowns_correct}/{total})")
-    print(f"Overall accuracy: {overall_accuracy:.2f} ({fully_correct}/{total})")
+    # Plot confusion matrix for terrain type
+    plot_confusion_matrix(
+        y_test_terrain, 
+        y_pred_terrain, 
+        sorted(set(y_test_terrain)), 
+        'Terrain Classification Confusion Matrix'
+    )
     
-    print("\nTerrain Classification Report (sklearn):")
-    try:
-        all_possible_terrain_labels = sorted(list(set(actual_terrains + predicted_terrains)))
-        print(classification_report(actual_terrains, predicted_terrains, labels=all_possible_terrain_labels, zero_division=0))
-    except Exception as e:
-        print(f"Fejl ved generering af klassifikationsrapport: {e}")
+    # Print resultater
+    print("\n===== MODEL EVALUATION RESULTS =====")
+    print(f"Terrain Classification Accuracy: {terrain_accuracy:.4f} ({len(y_test)} samples)")
+    print(f"Crown Detection Accuracy: {crown_accuracy:.4f} ({test_crown_count} samples)")
     
-    print("\nCrown Detection Accuracy by Actual Crown Count:")
-    crown_counts_stats = {}
-    for r in results:
-        count = r['actual_crowns']
-        if count not in crown_counts_stats:
-            crown_counts_stats[count] = {'total': 0, 'correct': 0}
-        crown_counts_stats[count]['total'] += 1
-        if r['crowns_correct']:
-            crown_counts_stats[count]['correct'] += 1
+    print("\nAccuracy pr. terræntype:")
+    for terrain, metrics in sorted(terrain_metrics.items()):
+        print(f"  {terrain}: {metrics['accuracy']:.4f} ({metrics['count']} samples)")
     
-    for count, stats in sorted(crown_counts_stats.items()):
-        accuracy = stats['correct'] / stats['total'] if stats['total'] > 0 else 0
-        print(f"  {count} kroner: {accuracy:.2f} ({stats['correct']}/{stats['total']})")
+    print("\nKrone-accuracy pr. terræntype:")
+    for terrain, metrics in sorted(crown_metrics_by_terrain.items()):
+        print(f"  {terrain}: {metrics['crown_accuracy']:.4f} (Sand sum: {metrics['true_crown_count']}, Forudsagt sum: {metrics['pred_crown_count']})")
     
-    return {'actual_terrains': actual_terrains, 'predicted_terrains': predicted_terrains,
-            'actual_crowns': actual_crowns, 'predicted_crowns': predicted_crowns}, results
+    # Gem resultater til JSON
+    with open(os.path.join(RESULTS_DIR, 'evaluation_results.json'), 'w') as f:
+        json.dump(results, f, indent=2)
+    
+    return results
 
 def plot_confusion_matrix(actual, predicted, labels, title):
     cm = confusion_matrix(actual, predicted, labels=labels)
@@ -338,69 +433,45 @@ def plot_confusion_matrix(actual, predicted, labels, title):
     plt.xticks(tick_marks, labels, rotation=90)
     plt.yticks(tick_marks, labels)
     
+    # Normaliseret CM for bedre visualisering
+    cm_norm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+    
+    # Tilføj labels til celler
     thresh = cm.max() / 2.
     for i in range(cm.shape[0]):
         for j in range(cm.shape[1]):
-            cell_value = cm[i, j]
-            if np.isnan(cell_value):
-                text_value = ""
-            else:
-                text_value = str(cell_value)
-                
-            plt.text(j, i, text_value,
+            plt.text(j, i, f"{cm[i,j]}\n({cm_norm[i,j]:.2f})",
                      ha="center", va="center",
-                     color="white" if cell_value > thresh else "black")
+                     color="white" if cm[i, j] > thresh else "black",
+                     fontsize=8)
     
     plt.tight_layout()
-    plt.ylabel('Faktisk')
-    plt.xlabel('Forudsagt')
-    plt.show()
+    plt.ylabel('Sand Label')
+    plt.xlabel('Forudsagt Label')
+    plt.savefig(os.path.join(RESULTS_DIR, 'confusion_matrix.png'))
+    plt.close()
 
 def main():
+    # Indlæs model og templates
+    print("Indlæser terrænklassifikationsmodel...")
     terrain_model = load_terrain_model()
     if terrain_model is None:
         print("Kunne ikke indlæse terrænklassifikationsmodel. Afslutter.")
         return
     
+    print("Indlæser crown templates...")
     templates, template_names = load_crown_templates()
     if not templates:
         print("Kunne ikke indlæse crown templates. Afslutter.")
         return
     
-    print("Evaluerer det samlede system på udvalgte samples...")
-    stats, results = evaluate_on_sample(
+    print("Evaluerer model på 20% test data fra det oprindelige train/test split...")
+    evaluate_on_test_data(
         terrain_model, templates, template_names, 
-        samples_per_terrain=10, visualize=True
+        visualize_samples=3
     )
     
-    actual_terrains = stats['actual_terrains']
-    predicted_terrains = stats['predicted_terrains']
-    actual_crowns = stats['actual_crowns']
-    predicted_crowns = stats['predicted_crowns']
-
-    try:
-        all_terrain_labels = sorted(list(set(actual_terrains + predicted_terrains)))
-        if len(all_terrain_labels) > 1:
-            plot_confusion_matrix(
-                actual_terrains, 
-                predicted_terrains,
-                all_terrain_labels,
-                "Terrain Classification Confusion Matrix"
-            )
-    except Exception as e:
-        print(f"Kunne ikke plotte terrain confusion matrix: {e}")
-    
-    try:
-        all_crown_counts = sorted(list(set(actual_crowns + predicted_crowns)))
-        if len(all_crown_counts) > 1:
-            plot_confusion_matrix(
-                actual_crowns, 
-                predicted_crowns,
-                all_crown_counts,
-                "Crown Detection Confusion Matrix (Counts)"
-            )
-    except Exception as e:
-        print(f"Kunne ikke plotte crown confusion matrix: {e}")
+    print(f"\nEvalueringen er fuldført! Resultater er gemt i {RESULTS_DIR}/")
 
 if __name__ == "__main__":
     main()
